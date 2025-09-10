@@ -48,4 +48,4 @@ ENV CHRONOTASK_DATABASE_URL=sqlite:////app/data/chronotask.db \
 
 # Default command - run HTTP server
 WORKDIR /app
-CMD ["python", "-m", "src.main", "--mode", "http"]
+CMD ["python", "-m", "src.main"]

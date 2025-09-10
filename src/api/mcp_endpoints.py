@@ -1,11 +1,13 @@
 """MCP endpoint for FastAPI - unified server approach."""
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Request, Response, Header, HTTPException
 from fastapi.responses import StreamingResponse
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import json
 import logging
 from datetime import datetime
+import secrets
+import uuid
 
 from models import Task, TaskType, TaskStatus, Schedule, ScheduleType
 from database import get_db
@@ -25,17 +27,29 @@ class MCPHandler:
             "list_tools": self._handle_list_tools,
             "call_tool": self._handle_call_tool,
         }
+        # Store active sessions
+        self.sessions = {}
     
     async def _handle_initialize(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle MCP initialize request."""
+        # Generate a secure session ID
+        session_id = str(uuid.uuid4())
+        self.sessions[session_id] = {
+            "created_at": datetime.utcnow(),
+            "protocol_version": params.get("protocolVersion", "2024-11-05"),
+            "capabilities": params.get("capabilities", {})
+        }
+        
         return {
-            "server_info": {
+            "protocolVersion": "2024-11-05",
+            "serverInfo": {
                 "name": "chronotask-scheduler",
                 "version": "1.0.0"
             },
             "capabilities": {
-                "tools": True
-            }
+                "tools": {}
+            },
+            "sessionId": session_id
         }
     
     async def _handle_list_tools(self, params: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -199,12 +213,36 @@ mcp_handler = MCPHandler()
 
 
 @router.post("/mcp")
-async def mcp_endpoint(request: Request):
+async def mcp_endpoint(
+    request: Request,
+    response: Response,
+    mcp_session_id: Optional[str] = Header(None, alias="Mcp-Session-Id")
+):
     """Handle MCP JSON-RPC requests over HTTP POST."""
     try:
         json_request = await request.json()
-        response = await mcp_handler.handle_request(json_request)
-        return response
+        
+        # Handle initialize specially - it creates a session
+        if json_request.get("method") == "initialize":
+            result = await mcp_handler.handle_request(json_request)
+            # Add session ID to response header if created
+            if "result" in result and "sessionId" in result["result"]:
+                response.headers["Mcp-Session-Id"] = result["result"]["sessionId"]
+            return result
+        
+        # For other methods, validate session if provided
+        if mcp_session_id and mcp_session_id not in mcp_handler.sessions:
+            return {
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32603,
+                    "message": "Invalid session ID"
+                },
+                "id": json_request.get("id")
+            }
+        
+        result = await mcp_handler.handle_request(json_request)
+        return result
     except json.JSONDecodeError:
         return {
             "jsonrpc": "2.0",
@@ -216,9 +254,60 @@ async def mcp_endpoint(request: Request):
         }
 
 
+@router.get("/mcp")
+async def mcp_get_endpoint(
+    accept: Optional[str] = Header(None),
+    mcp_session_id: Optional[str] = Header(None, alias="Mcp-Session-Id")
+):
+    """Handle MCP GET requests for SSE streaming."""
+    # Check if client wants SSE
+    if accept and "text/event-stream" in accept:
+        async def event_generator():
+            """Generate SSE events."""
+            # Send initial connection event
+            yield f"data: {json.dumps({'type': 'connected', 'timestamp': datetime.utcnow().isoformat()})}\n\n"
+            
+            # Keep connection alive with ping events
+            while True:
+                await asyncio.sleep(30)
+                yield f"data: {json.dumps({'type': 'ping', 'timestamp': datetime.utcnow().isoformat()})}\n\n"
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # Disable nginx buffering
+            }
+        )
+    else:
+        # Return server info for regular GET
+        return {
+            "name": "chronotask-scheduler",
+            "version": "1.0.0",
+            "protocol": "mcp",
+            "transport": ["http", "sse"]
+        }
+
+
+@router.options("/mcp")
+async def mcp_options_endpoint():
+    """Handle OPTIONS requests for CORS preflight."""
+    return Response(
+        headers={
+            "Allow": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Mcp-Session-Id, Authorization, Accept",
+            "Access-Control-Max-Age": "86400"
+        }
+    )
+
+
 @router.get("/mcp/sse")
 async def mcp_sse_endpoint():
-    """MCP over Server-Sent Events for streaming support."""
+    """Legacy SSE endpoint for backward compatibility."""
     async def event_generator():
         """Generate SSE events."""
         # Send initial connection event
