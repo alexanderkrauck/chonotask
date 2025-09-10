@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """Main entry point for ChronoTask."""
 
-import asyncio
 import logging
 import sys
-import os
 from pathlib import Path
 import uvicorn
-from concurrent.futures import ThreadPoolExecutor
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -40,28 +37,6 @@ def run_http_server():
     )
 
 
-async def run_mcp_server():
-    """Run the MCP server."""
-    logger.info(f"Starting MCP server")
-    
-    from mcp.scheduler_server import main as mcp_main
-    await mcp_main()
-
-
-async def run_both_servers():
-    """Run both HTTP and MCP servers concurrently."""
-    # Run HTTP server in a thread
-    with ThreadPoolExecutor() as executor:
-        http_future = executor.submit(run_http_server)
-        
-        # Run MCP server in asyncio
-        try:
-            await run_mcp_server()
-        except KeyboardInterrupt:
-            logger.info("Shutting down servers...")
-        finally:
-            # HTTP server will shut down when the process exits
-            pass
 
 
 def main():
@@ -69,12 +44,6 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="ChronoTask Scheduler")
-    parser.add_argument(
-        "--mode",
-        choices=["http", "mcp", "both"],
-        default="http",
-        help="Server mode to run (default: http)"
-    )
     parser.add_argument(
         "--host",
         default=settings.api_host,
@@ -98,17 +67,7 @@ def main():
     # Database will be created in current directory
     
     try:
-        if args.mode == "http":
-            run_http_server()
-        elif args.mode == "mcp":
-            asyncio.run(run_mcp_server())
-        else:  # both
-            if settings.mcp_enabled:
-                asyncio.run(run_both_servers())
-            else:
-                logger.warning("MCP is disabled in settings, running HTTP server only")
-                run_http_server()
-                
+        run_http_server()
     except KeyboardInterrupt:
         logger.info("Shutting down ChronoTask...")
     except Exception as e:
