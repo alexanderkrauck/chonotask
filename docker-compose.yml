@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  chronotask:
+    build: .
+    container_name: chronotask
+    restart: unless-stopped
+    ports:
+      - "8000:8000"  # HTTP API
+      - "8001:8001"  # MCP Server (optional)
+    volumes:
+      # Persistent data volume - mount local ./data directory
+      - ./data:/app/data
+      # Optional: Mount Docker socket for host command execution
+      # WARNING: This gives the container access to Docker on the host
+      # Uncomment only if you need to run Docker commands from tasks
+      # - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # Database configuration
+      - CHRONOTASK_DATABASE_URL=sqlite:////app/data/chronotask.db
+      
+      # API configuration
+      - CHRONOTASK_API_HOST=0.0.0.0
+      - CHRONOTASK_API_PORT=8000
+      
+      # Scheduler configuration
+      - CHRONOTASK_SCHEDULER_TIMEZONE=UTC
+      
+      # Security settings
+      - CHRONOTASK_ALLOW_HOST_COMMANDS=true
+      # Optionally restrict allowed bash commands (comma-separated)
+      # - CHRONOTASK_ALLOWED_BASH_COMMANDS=echo,ls,cat,date
+      
+      # Logging
+      - CHRONOTASK_LOG_LEVEL=INFO
+      - CHRONOTASK_LOG_FILE=/app/data/chronotask.log
+      
+      # MCP configuration
+      - CHRONOTASK_MCP_ENABLED=true
+      - CHRONOTASK_MCP_PORT=8001
+    
+    # For MCP stdio mode, uncomment this:
+    # stdin_open: true
+    # tty: true
+    # command: python -m src.mcp.scheduler_server
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # Resource limits (optional)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '1.0'
+    #       memory: 512M
+    #     reservations:
+    #       cpus: '0.25'
+    #       memory: 128M
+
+# No named volumes needed - using local ./data directory
