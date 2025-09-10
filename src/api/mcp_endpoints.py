@@ -25,7 +25,9 @@ class MCPHandler:
         self.methods = {
             "initialize": self._handle_initialize,
             "list_tools": self._handle_list_tools,
+            "tools/list": self._handle_list_tools,  # Alternative method name
             "call_tool": self._handle_call_tool,
+            "tools/call": self._handle_call_tool,  # Alternative method name
         }
         # Store active sessions
         self.sessions = {}
