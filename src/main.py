@@ -24,12 +24,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_http_server():
-    """Run the HTTP API server."""
-    logger.info(f"Starting HTTP server on {settings.api_host}:{settings.api_port}")
+def run_server():
+    """Run the unified FastAPI+MCP server."""
+    logger.info(f"Starting ChronoTask server on {settings.api_host}:{settings.api_port}")
+    logger.info("HTTP API available at: /api/v1")
+    logger.info("MCP endpoint available at: /llm/mcp")
     
     uvicorn.run(
-        "api.http_server:app",
+        "server:final_app",
         host=settings.api_host,
         port=settings.api_port,
         reload=settings.api_reload,
@@ -47,13 +49,13 @@ def main():
     parser.add_argument(
         "--host",
         default=settings.api_host,
-        help=f"HTTP server host (default: {settings.api_host})"
+        help=f"Server host (default: {settings.api_host})"
     )
     parser.add_argument(
         "--port",
         type=int,
         default=settings.api_port,
-        help=f"HTTP server port (default: {settings.api_port})"
+        help=f"Server port (default: {settings.api_port})"
     )
     
     args = parser.parse_args()
@@ -64,10 +66,8 @@ def main():
     if args.port:
         settings.api_port = args.port
     
-    # Database will be created in current directory
-    
     try:
-        run_http_server()
+        run_server()
     except KeyboardInterrupt:
         logger.info("Shutting down ChronoTask...")
     except Exception as e:
