@@ -34,7 +34,7 @@ scheduler_manager = None
 class TaskCreate(BaseModel):
     name: str
     task_type: str
-    config: Dict[str, Any]
+    config: str  # Changed to accept JSON string from MCP
     description: Optional[str] = None
     max_retries: int = 3
     retry_delay: int = 5
@@ -44,7 +44,7 @@ class TaskUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
-    config: Optional[Dict[str, Any]] = None
+    config: Optional[str] = None  # Changed to accept JSON string from MCP
     max_retries: Optional[int] = None
     retry_delay: Optional[int] = None
 
@@ -52,8 +52,8 @@ class TaskUpdate(BaseModel):
 class ScheduleCreate(BaseModel):
     task_id: int
     schedule_type: str
-    schedule_config: Dict[str, Any]
-    enabled: bool = True
+    schedule_config: str
+    enabled: str = "true"
 
 
 class ScheduleUpdate(BaseModel):
@@ -106,14 +106,36 @@ async def health():
 # Task endpoints
 @app.post("/tasks", response_model=Dict[str, Any])
 async def create_task(task: TaskCreate):
-    """Create a new task."""
+    """
+    Create a new task.
+
+    **Parameters:**
+    - name (str, required): The name of the task
+    - task_type (str, required): The type of task (e.g., 'http', 'bash')
+    - config (str, required): JSON string containing the task configuration
+      - For HTTP: '{"url": "https://example.com", "method": "GET", "headers": {}, "body": null, "timeout": 30}'
+      - For BASH: '{"command": "echo Hello World", "args": [], "env": {}, "timeout": 60, "working_dir": "/tmp"}'
+    - description (str, optional): Description of the task
+    - max_retries (int, optional): Maximum retry attempts (default: 3)
+    - retry_delay (int, optional): Delay between retries in seconds (default: 5)
+
+    **Responses:**
+    - 200: Successful response with task details
+    - 400: Invalid JSON in config
+    - 500: Internal server error
+    """
     try:
+        import json
+        try:
+            config_dict = json.loads(task.config)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON in config")
         with db_manager.get_session() as session:
             db_task = Task(
                 name=task.name,
                 description=task.description,
                 task_type=TaskType(task.task_type),
-                config=task.config,
+                config=config_dict,
                 status=TaskStatus.ACTIVE,
                 max_retries=task.max_retries,
                 retry_delay=task.retry_delay
@@ -136,7 +158,17 @@ async def list_tasks(
     status: Optional[str] = Query(None, description="Filter by status"),
     include_schedules: bool = Query(False, description="Include schedules")
 ):
-    """List all tasks."""
+    """
+    List all tasks.
+
+    **Query Parameters:**
+    - status (str, optional): Filter by task status ('active', 'paused', 'disabled')
+    - include_schedules (bool, optional): Whether to include schedule information for each task (default: False)
+
+    **Responses:**
+    - 200: Successful response with list of tasks and count
+    - 500: Internal server error
+    """
     try:
         with db_manager.get_session() as session:
             query = session.query(Task)
@@ -164,7 +196,17 @@ async def list_tasks(
 
 @app.get("/tasks/{task_id}", response_model=Dict[str, Any])
 async def get_task(task_id: int):
-    """Get a specific task."""
+    """
+    Get a specific task.
+
+    **Path Parameters:**
+    - task_id (int, required): The ID of the task to retrieve
+
+    **Responses:**
+    - 200: Successful response with task details including schedules
+    - 404: Task not found
+    - 500: Internal server error
+    """
     try:
         with db_manager.get_session() as session:
             task = session.query(Task).filter_by(id=task_id).first()
@@ -188,7 +230,28 @@ async def get_task(task_id: int):
 
 @app.put("/tasks/{task_id}", response_model=Dict[str, Any])
 async def update_task(task_id: int, update: TaskUpdate):
-    """Update a task."""
+    """
+    Update a task.
+
+    **Path Parameters:**
+    - task_id (int, required): The ID of the task to update
+
+    **Body Parameters (TaskUpdate):**
+    - name (str, optional): New name for the task
+    - description (str, optional): New description
+    - status (str, optional): New status ('active', 'paused', 'disabled')
+    - config (str, optional): JSON string containing the updated task configuration
+      - For HTTP: '{"url": "https://example.com", "method": "GET", "headers": {}, "body": null, "timeout": 30}'
+      - For BASH: '{"command": "echo Hello World", "args": [], "env": {}, "timeout": 60, "working_dir": "/tmp"}'
+    - max_retries (int, optional): Updated max retries
+    - retry_delay (int, optional): Updated retry delay
+
+    **Responses:**
+    - 200: Successful response with updated task details
+    - 400: Invalid JSON in config
+    - 404: Task not found
+    - 500: Internal server error
+    """
     try:
         with db_manager.get_session() as session:
             task = session.query(Task).filter_by(id=task_id).first()
@@ -202,7 +265,11 @@ async def update_task(task_id: int, update: TaskUpdate):
             if update.status is not None:
                 task.status = TaskStatus(update.status)
             if update.config is not None:
-                task.config = update.config
+                import json
+                try:
+                    task.config = json.loads(update.config)
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=400, detail="Invalid JSON in config")
             if update.max_retries is not None:
                 task.max_retries = update.max_retries
             if update.retry_delay is not None:
@@ -282,12 +349,32 @@ async def execute_task(task_id: int):
 # Schedule endpoints
 @app.post("/schedules", response_model=Dict[str, Any])
 async def create_schedule(schedule: ScheduleCreate):
-    """Create a schedule for a task."""
+    """
+    Create a schedule for a task.
+
+    **Parameters:**
+    - task_id (int, required): The ID of the task
+    - schedule_type (str, required): The type of schedule (e.g., 'cron', 'interval')
+    - schedule_config (str, required): JSON string containing the schedule configuration
+      - For cron: '{"cron": "* * * * *"}'
+      - For interval: '{"seconds": 3600}'
+    - enabled (bool, optional): Whether the schedule is enabled (default: true)
+
+    **Responses:**
+    - 200: Successful response with schedule details
+    - 400: Invalid JSON in schedule_config
+    - 500: Internal server error
+    """
     try:
+        import json
+        try:
+            config_dict = json.loads(schedule.schedule_config)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON in schedule_config")
         db_schedule = scheduler_manager.create_schedule(
             task_id=schedule.task_id,
             schedule_type=ScheduleType(schedule.schedule_type),
-            schedule_config=schedule.schedule_config
+            schedule_config=config_dict
         )
         
         if db_schedule:
@@ -295,7 +382,7 @@ async def create_schedule(schedule: ScheduleCreate):
             if hasattr(schedule, 'enabled'):
                 with db_manager.get_session() as session:
                     db_schedule = session.query(Schedule).filter_by(id=db_schedule.id).first()
-                    db_schedule.is_active = schedule.enabled
+                    db_schedule.is_active = schedule.enabled.lower() == 'true'
                     session.commit()
             with db_manager.get_session() as session:
                 fresh_schedule = session.query(Schedule).filter_by(id=db_schedule.id).first()
@@ -485,7 +572,7 @@ async def get_task_history(task_id: int, limit: int = Query(10, description="Max
 logger.info("Converting FastAPI app to MCP...")
 mcp = FastMCP.from_fastapi(app, name="ChronoTask MCP")
 
-# 3. Create MCP's ASGI app - try with SSE transport for Claude MCP compatibility
+# 3. Create MCP's ASGI app
 mcp_app = mcp.http_app(path='/mcp')
 
 
