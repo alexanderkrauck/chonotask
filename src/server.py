@@ -487,11 +487,23 @@ mcp_app = mcp.http_app(path='/mcp')
 @asynccontextmanager
 async def combined_lifespan(app: FastAPI):
     """Combined lifespan for both ChronoTask and MCP."""
-    # Start our services
-    async with lifespan(app):
-        # Start MCP services
-        async with mcp_app.lifespan(app):
-            yield
+    # Start our database and scheduler services
+    global scheduler_manager
+    logger.info("Starting ChronoTask server...")
+    db_manager.initialize()
+    scheduler_manager = SchedulerManager(db_manager)
+    scheduler_manager.initialize()
+    logger.info("ChronoTask server started successfully")
+    
+    # Start MCP services
+    async with mcp_app.lifespan(app):
+        yield
+    
+    # Shutdown
+    logger.info("Shutting down ChronoTask server...")
+    if scheduler_manager:
+        scheduler_manager.shutdown()
+    logger.info("ChronoTask server shut down")
 
 
 # 4. Create the final app with combined lifespan
