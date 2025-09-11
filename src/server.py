@@ -480,8 +480,8 @@ async def get_task_history(task_id: int, limit: int = Query(10, description="Max
 logger.info("Converting FastAPI app to MCP...")
 mcp = FastMCP.from_fastapi(app, name="ChronoTask MCP")
 
-# 3. Create MCP's ASGI app
-mcp_app = mcp.http_app(path='/mcp')
+# 3. Create MCP's ASGI app - try with SSE transport for Claude MCP compatibility
+mcp_app = mcp.http_app(path='/mcp', transport='sse')
 
 
 @asynccontextmanager
