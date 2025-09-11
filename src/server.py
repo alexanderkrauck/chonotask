@@ -287,11 +287,16 @@ async def create_schedule(schedule: ScheduleCreate):
         db_schedule = scheduler_manager.create_schedule(
             task_id=schedule.task_id,
             schedule_type=ScheduleType(schedule.schedule_type),
-            schedule_config=schedule.schedule_config,
-            enabled=schedule.enabled
+            schedule_config=schedule.schedule_config
         )
         
         if db_schedule:
+            # Set the enabled status if provided
+            if hasattr(schedule, 'enabled'):
+                with db_manager.get_session() as session:
+                    db_schedule = session.query(Schedule).filter_by(id=db_schedule.id).first()
+                    db_schedule.is_active = schedule.enabled
+                    session.commit()
             with db_manager.get_session() as session:
                 fresh_schedule = session.query(Schedule).filter_by(id=db_schedule.id).first()
                 return {
@@ -481,7 +486,7 @@ logger.info("Converting FastAPI app to MCP...")
 mcp = FastMCP.from_fastapi(app, name="ChronoTask MCP")
 
 # 3. Create MCP's ASGI app - try with SSE transport for Claude MCP compatibility
-mcp_app = mcp.http_app(path='/mcp', transport='sse')
+mcp_app = mcp.http_app(path='/mcp')
 
 
 @asynccontextmanager
