@@ -353,12 +353,27 @@ async def create_schedule(schedule: ScheduleCreate):
     Create a schedule for a task.
 
     **Parameters:**
-    - task_id (int, required): The ID of the task
-    - schedule_type (str, required): The type of schedule (e.g., 'cron', 'interval')
-    - schedule_config (str, required): JSON string containing the schedule configuration
-      - For cron: '{"cron": "* * * * *"}'
-      - For interval: '{"seconds": 3600}'
-    - enabled (bool, optional): Whether the schedule is enabled (default: true)
+    - task_id (int, required): The ID of the task to schedule
+    - schedule_type (str, required): The type of schedule
+      - 'once': Execute task one time at a specific datetime
+      - 'cron': Execute task on a recurring cron schedule  
+      - 'interval': Execute task at fixed time intervals
+    - schedule_config (str, required): JSON string with schedule configuration
+      - For 'once': '{"datetime": "2025-01-15T14:30:00"}' 
+        * datetime: ISO format timestamp when task should run (YYYY-MM-DDTHH:MM:SS)
+        * Task will run exactly once at this time, then the schedule auto-deactivates
+      - For 'cron': '{"expression": "0 14 * * *"}' 
+        * expression: Standard cron format (minute hour day month day_of_week)
+        * Examples: "0 14 * * *" (daily at 2pm), "*/5 * * * *" (every 5 minutes)
+      - For 'interval': '{"seconds": 3600}'
+        * seconds: Number of seconds between executions
+        * Optional: "start_date" to specify when intervals begin
+    - enabled (bool, optional): Whether schedule is active (default: true)
+
+    **Examples:**
+    - One-time execution: schedule_type="once", schedule_config='{"datetime": "2025-01-15T09:00:00"}'
+    - Daily at 9am: schedule_type="cron", schedule_config='{"expression": "0 9 * * *"}'  
+    - Every hour: schedule_type="interval", schedule_config='{"seconds": 3600}'
 
     **Responses:**
     - 200: Successful response with schedule details
