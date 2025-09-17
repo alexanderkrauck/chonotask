@@ -4,7 +4,7 @@ services:
   chronotask:
     build: .
     container_name: chronotask
-    restart: unless-stopped
+    restart: always
     ports:
       - "8000:8000"  # HTTP API
       - "8001:8001"  # MCP Server (optional)

@@ -57,12 +57,25 @@ def check_and_migrate(session: Session):
 def get_migrations():
     """Return dictionary of migration functions by version."""
     migrations = {}
-    
-    # Example migration for version 2
+
+    # Migration to unified task model
     def migration_v2(session: Session):
-        # Add any new columns or tables for v2
-        pass
-    
-    # migrations[2] = migration_v2
-    
+        """Migrate to unified task model - drop old tables and recreate."""
+        logger.info("Starting migration to unified task model")
+
+        # Drop old tables if they exist
+        try:
+            session.execute(text("DROP TABLE IF EXISTS execution_history"))
+            session.execute(text("DROP TABLE IF EXISTS schedules"))
+            logger.info("Dropped old schedules and execution_history tables")
+        except Exception as e:
+            logger.warning(f"Error dropping old tables: {e}")
+
+        # The new unified tasks table will be created by Base.metadata.create_all()
+        # in the database initialization
+
+        logger.info("Migration v2 completed - unified task model ready")
+
+    migrations[2] = migration_v2
+
     return migrations

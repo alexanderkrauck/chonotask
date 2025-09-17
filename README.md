@@ -13,7 +13,7 @@ docker build -t chronotask .
 # Run the container
 docker run -d \
   --name chronotask \
-  -p 8585:8585 \
+  -p 8000:8000 \
   -v chronotask-data:/app/data \
   chronotask
 
@@ -60,7 +60,7 @@ python src/server.py
 
 # Run with custom settings
 export API_HOST=0.0.0.0
-export API_PORT=8585
+export API_PORT=8000
 python src/server.py
 ```
 
@@ -76,30 +76,28 @@ rm data/chronotask.db
 
 ```bash
 # Health check
-curl http://localhost:8585/api/v1/health
+curl http://localhost:8000/api/v1/health
 
 # Create a task
-curl -X POST http://localhost:8585/api/v1/tasks \
+curl -X POST http://localhost:8000/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Test Task",
     "task_type": "http",
-    "config": "{\"url\": \"https://httpbin.org/get\", \"method\": \"GET\", \"timeout\": 30}"
+    "execution_config": "{\"url\": \"https://httpbin.org/get\", \"method\": \"GET\", \"timeout\": 30}"
   }'
 
 # List tasks
-curl http://localhost:8585/api/v1/tasks
+curl http://localhost:8000/api/v1/tasks
 
 # Execute task immediately
-curl -X POST http://localhost:8585/api/v1/tasks/{task_id}/execute
+curl -X POST http://localhost:8000/api/v1/tasks/{task_id}/execute
 
 # Create a schedule
-curl -X POST http://localhost:8585/api/v1/schedules \
+curl -X POST http://localhost:8000/api/v1/tasks/{task_id}/schedule \
   -H "Content-Type: application/json" \
   -d '{
-    "task_id": 1,
-    "schedule_type": "interval",
-    "schedule_config": "{\"seconds\": 300}"
+    "schedule_config": "{\"type\": \"interval\", \"seconds\": 300}"
   }'
 ```
 
@@ -108,7 +106,7 @@ curl -X POST http://localhost:8585/api/v1/schedules \
 ```bash
 # API Configuration
 API_HOST=0.0.0.0         # Default: 0.0.0.0
-API_PORT=8585            # Default: 8585
+API_PORT=8000            # Default: 8000
 LOG_LEVEL=INFO           # Default: INFO
 
 # Database
@@ -120,9 +118,9 @@ SCHEDULER_TIMEZONE=UTC   # Default: UTC
 
 ## API Endpoints
 
-- **API Docs**: http://localhost:8585/api/v1/docs
-- **Health**: http://localhost:8585/api/v1/health
-- **MCP**: http://localhost:8585/llm/mcp
+- **API Docs**: http://localhost:8000/api/v1/docs
+- **Health**: http://localhost:8000/api/v1/health
+- **MCP**: http://localhost:8000/llm/mcp
 
 ## Directory Structure
 
@@ -168,9 +166,9 @@ docker exec -it chronotask python
 ### Port already in use
 ```bash
 # Find process using port
-lsof -i :8585
+lsof -i :8000
 # Or change port
-docker run -p 8586:8585 chronotask
+docker run -p 8001:8000 chronotask
 ```
 
 ### Database locked
@@ -182,8 +180,8 @@ docker restart chronotask
 ### Schedule not running
 ```bash
 # Check scheduler status
-curl http://localhost:8585/api/v1/status
+curl http://localhost:8000/api/v1/status
 
 # Check task status
-curl http://localhost:8585/api/v1/tasks/{task_id}
+curl http://localhost:8000/api/v1/tasks/{task_id}
 ```

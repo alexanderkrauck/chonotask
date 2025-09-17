@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from fastapi import FastAPI, HTTPException, Query
 from fastmcp import FastMCP
 from pydantic import BaseModel
-from models import Task, TaskType, TaskStatus, Schedule, ScheduleType
+from models import Task
 from database import db_manager
 from scheduler.core import SchedulerManager
 from config import settings
@@ -34,60 +34,38 @@ scheduler_manager = None
 class TaskCreate(BaseModel):
     name: str
     task_type: str
-    config: str  # Changed to accept JSON string from MCP
     description: Optional[str] = None
-    max_retries: int = 3
-    retry_delay: int = 5
+    status_category: Optional[str] = "open"
+    status_text: Optional[str] = None
+    completion_criteria: Optional[str] = None  # JSON string
+    execution_config: Optional[str] = None     # JSON string
+    schedule_config: Optional[str] = None      # JSON string
+    schedule_enabled: bool = False
+    custom_fields: Optional[str] = None        # JSON string
 
 
 class TaskUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    status: Optional[str] = None
-    config: Optional[str] = None  # Changed to accept JSON string from MCP
-    max_retries: Optional[int] = None
-    retry_delay: Optional[int] = None
+    status_category: Optional[str] = None
+    status_text: Optional[str] = None
+    completion_criteria: Optional[str] = None  # JSON string
+    execution_config: Optional[str] = None     # JSON string
+    schedule_config: Optional[str] = None      # JSON string
+    schedule_enabled: Optional[bool] = None
+    custom_fields: Optional[str] = None        # JSON string
 
 
-class ScheduleCreate(BaseModel):
-    task_id: int
-    schedule_type: str
-    schedule_config: str
-    enabled: str = "true"
+class TaskScheduleUpdate(BaseModel):
+    schedule_config: str  # JSON string
+    schedule_enabled: bool = True
 
 
-class ScheduleUpdate(BaseModel):
-    enabled: Optional[bool] = None
-    schedule_config: Optional[Dict[str, Any]] = None
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Manage application lifecycle."""
-    global scheduler_manager
-    
-    # Startup
-    logger.info("Starting ChronoTask server...")
-    db_manager.initialize()
-    scheduler_manager = SchedulerManager(db_manager)
-    scheduler_manager.initialize()
-    logger.info("ChronoTask server started successfully")
-    
-    yield
-    
-    # Shutdown
-    logger.info("Shutting down ChronoTask server...")
-    if scheduler_manager:
-        scheduler_manager.shutdown()
-    logger.info("ChronoTask server shut down")
-
-
-# 1. Create normal FastAPI app
+# 1. Create normal FastAPI app (for mounting)
 app = FastAPI(
     title="ChronoTask API",
     description="Task scheduling and automation service",
-    version="1.0.0",
-    lifespan=lifespan
+    version="1.0.0"
 )
 
 
@@ -111,38 +89,59 @@ async def create_task(task: TaskCreate):
 
     **Parameters:**
     - name (str, required): The name of the task
-    - task_type (str, required): The type of task (e.g., 'http', 'bash')
-    - config (str, required): JSON string containing the task configuration
-      - For HTTP: '{"url": "https://example.com", "method": "GET", "headers": {}, "body": null, "timeout": 30}'
-      - For BASH: '{"command": "echo Hello World", "args": [], "env": {}, "timeout": 60, "working_dir": "/tmp"}'
+    - task_type (str, required): The type of task (e.g., 'todo', 'http', 'bash')
     - description (str, optional): Description of the task
-    - max_retries (int, optional): Maximum retry attempts (default: 3)
-    - retry_delay (int, optional): Delay between retries in seconds (default: 5)
+    - status_category (str, optional): Status category ('open', 'in_progress', 'waiting', 'completed', 'cancelled')
+    - status_text (str, optional): Custom status text
+    - completion_criteria (str, optional): JSON string for completion criteria
+    - execution_config (str, optional): JSON string for execution configuration
+    - schedule_config (str, optional): JSON string for scheduling configuration
+    - schedule_enabled (bool, optional): Whether scheduling is enabled
+    - custom_fields (str, optional): JSON string for arbitrary custom fields
 
     **Responses:**
     - 200: Successful response with task details
-    - 400: Invalid JSON in config
+    - 400: Invalid JSON in configurations
     - 500: Internal server error
     """
     try:
         import json
-        try:
-            config_dict = json.loads(task.config)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid JSON in config")
+
+        # Parse JSON fields
+        def parse_json_field(field_value, field_name):
+            if field_value:
+                try:
+                    return json.loads(field_value)
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=400, detail=f"Invalid JSON in {field_name}")
+            return None
+
+        completion_criteria = parse_json_field(task.completion_criteria, "completion_criteria")
+        execution_config = parse_json_field(task.execution_config, "execution_config")
+        schedule_config = parse_json_field(task.schedule_config, "schedule_config")
+        custom_fields = parse_json_field(task.custom_fields, "custom_fields")
+
         with db_manager.get_session() as session:
             db_task = Task(
                 name=task.name,
                 description=task.description,
-                task_type=TaskType(task.task_type),
-                config=config_dict,
-                status=TaskStatus.ACTIVE,
-                max_retries=task.max_retries,
-                retry_delay=task.retry_delay
+                task_type=task.task_type,
+                status_category=task.status_category,
+                status_text=task.status_text,
+                completion_criteria=completion_criteria,
+                execution_config=execution_config,
+                schedule_config=schedule_config,
+                schedule_enabled=task.schedule_enabled,
+                custom_fields=custom_fields
             )
             session.add(db_task)
             session.commit()
             session.refresh(db_task)
+
+            # Add to scheduler if scheduling is enabled
+            if task.schedule_enabled and schedule_config and scheduler_manager:
+                scheduler_manager.enable_task_schedule(db_task.id, schedule_config)
+
             return {
                 "success": True,
                 "task": db_task.to_dict(),
@@ -155,15 +154,17 @@ async def create_task(task: TaskCreate):
 
 @app.get("/tasks", response_model=Dict[str, Any])
 async def list_tasks(
-    status: Optional[str] = Query(None, description="Filter by status"),
-    include_schedules: bool = Query(False, description="Include schedules")
+    status: Optional[str] = Query(None, description="Filter by status category"),
+    task_type: Optional[str] = Query(None, description="Filter by task type"),
+    scheduled_only: bool = Query(False, description="Only show scheduled tasks")
 ):
     """
     List all tasks.
 
     **Query Parameters:**
-    - status (str, optional): Filter by task status ('active', 'paused', 'disabled')
-    - include_schedules (bool, optional): Whether to include schedule information for each task (default: False)
+    - status (str, optional): Filter by status category ('open', 'in_progress', 'waiting', 'completed', 'cancelled')
+    - task_type (str, optional): Filter by task type ('todo', 'http', 'bash')
+    - scheduled_only (bool, optional): Only show tasks with scheduling enabled
 
     **Responses:**
     - 200: Successful response with list of tasks and count
@@ -172,18 +173,17 @@ async def list_tasks(
     try:
         with db_manager.get_session() as session:
             query = session.query(Task)
+
             if status:
-                query = query.filter(Task.status == TaskStatus(status))
+                query = query.filter(Task.status_category == status)
+            if task_type:
+                query = query.filter(Task.task_type == task_type)
+            if scheduled_only:
+                query = query.filter(Task.schedule_enabled == True)
+
             tasks = query.all()
-            
-            task_list = []
-            for task in tasks:
-                task_dict = task.to_dict()
-                if include_schedules:
-                    schedules = session.query(Schedule).filter_by(task_id=task.id).all()
-                    task_dict["schedules"] = [s.to_dict() for s in schedules]
-                task_list.append(task_dict)
-            
+            task_list = [task.to_dict() for task in tasks]
+
             return {
                 "success": True,
                 "tasks": task_list,
@@ -203,7 +203,7 @@ async def get_task(task_id: int):
     - task_id (int, required): The ID of the task to retrieve
 
     **Responses:**
-    - 200: Successful response with task details including schedules
+    - 200: Successful response with task details
     - 404: Task not found
     - 500: Internal server error
     """
@@ -212,14 +212,10 @@ async def get_task(task_id: int):
             task = session.query(Task).filter_by(id=task_id).first()
             if not task:
                 raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-            
-            schedules = session.query(Schedule).filter_by(task_id=task.id).all()
-            task_dict = task.to_dict()
-            task_dict["schedules"] = [s.to_dict() for s in schedules]
-            
+
             return {
                 "success": True,
-                "task": task_dict
+                "task": task.to_dict()
             }
     except HTTPException:
         raise
@@ -239,50 +235,74 @@ async def update_task(task_id: int, update: TaskUpdate):
     **Body Parameters (TaskUpdate):**
     - name (str, optional): New name for the task
     - description (str, optional): New description
-    - status (str, optional): New status ('active', 'paused', 'disabled')
-    - config (str, optional): JSON string containing the updated task configuration
-      - For HTTP: '{"url": "https://example.com", "method": "GET", "headers": {}, "body": null, "timeout": 30}'
-      - For BASH: '{"command": "echo Hello World", "args": [], "env": {}, "timeout": 60, "working_dir": "/tmp"}'
-    - max_retries (int, optional): Updated max retries
-    - retry_delay (int, optional): Updated retry delay
+    - status_category (str, optional): New status category ('open', 'in_progress', 'waiting', 'completed', 'cancelled')
+    - status_text (str, optional): Custom status text
+    - completion_criteria (str, optional): JSON string for completion criteria
+    - execution_config (str, optional): JSON string for execution configuration
+    - schedule_config (str, optional): JSON string for scheduling configuration
+    - schedule_enabled (bool, optional): Whether scheduling is enabled
+    - custom_fields (str, optional): JSON string for arbitrary custom fields
 
     **Responses:**
     - 200: Successful response with updated task details
-    - 400: Invalid JSON in config
+    - 400: Invalid JSON in configurations
     - 404: Task not found
     - 500: Internal server error
     """
     try:
+        import json
+
+        # Parse JSON fields
+        def parse_json_field(field_value, field_name):
+            if field_value is not None:
+                try:
+                    return json.loads(field_value)
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=400, detail=f"Invalid JSON in {field_name}")
+            return None
+
         with db_manager.get_session() as session:
             task = session.query(Task).filter_by(id=task_id).first()
             if not task:
                 raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-            
+
+            # Track if schedule settings changed
+            schedule_changed = False
+            old_schedule_enabled = task.schedule_enabled
+
+            # Update fields
             if update.name is not None:
                 task.name = update.name
             if update.description is not None:
                 task.description = update.description
-            if update.status is not None:
-                task.status = TaskStatus(update.status)
-            if update.config is not None:
-                import json
-                try:
-                    task.config = json.loads(update.config)
-                except json.JSONDecodeError:
-                    raise HTTPException(status_code=400, detail="Invalid JSON in config")
-            if update.max_retries is not None:
-                task.max_retries = update.max_retries
-            if update.retry_delay is not None:
-                task.retry_delay = update.retry_delay
-            
+            if update.status_category is not None:
+                task.status_category = update.status_category
+            if update.status_text is not None:
+                task.status_text = update.status_text
+            if update.completion_criteria is not None:
+                task.completion_criteria = parse_json_field(update.completion_criteria, "completion_criteria")
+            if update.execution_config is not None:
+                task.execution_config = parse_json_field(update.execution_config, "execution_config")
+            if update.schedule_config is not None:
+                task.schedule_config = parse_json_field(update.schedule_config, "schedule_config")
+                schedule_changed = True
+            if update.schedule_enabled is not None:
+                task.schedule_enabled = update.schedule_enabled
+                schedule_changed = True
+            if update.custom_fields is not None:
+                task.custom_fields = parse_json_field(update.custom_fields, "custom_fields")
+
             task.updated_at = datetime.utcnow()
             session.commit()
             session.refresh(task)
-            
-            # Update scheduler if status changed
-            if update.status is not None:
-                scheduler_manager.update_task_status(task_id, TaskStatus(update.status))
-            
+
+            # Update scheduler if schedule settings changed
+            if schedule_changed and scheduler_manager:
+                if task.schedule_enabled and task.schedule_config:
+                    scheduler_manager.enable_task_schedule(task_id, task.schedule_config)
+                elif old_schedule_enabled and not task.schedule_enabled:
+                    scheduler_manager.disable_task_schedule(task_id)
+
             return {
                 "success": True,
                 "task": task.to_dict(),
@@ -307,10 +327,8 @@ async def delete_task(task_id: int):
             task_name = task.name
             
             # Remove from scheduler first
-            scheduler_manager.remove_task_schedules(task_id)
-            
-            # Delete schedules
-            session.query(Schedule).filter_by(task_id=task_id).delete()
+            if scheduler_manager:
+                scheduler_manager.disable_task_schedule(task_id)
             
             # Delete task
             session.delete(task)
@@ -346,196 +364,132 @@ async def execute_task(task_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Schedule endpoints
-@app.post("/schedules", response_model=Dict[str, Any])
-async def create_schedule(schedule: ScheduleCreate):
+# Task scheduling endpoints
+@app.post("/tasks/{task_id}/schedule", response_model=Dict[str, Any])
+async def enable_task_schedule(task_id: int, schedule_update: TaskScheduleUpdate):
     """
-    Create a schedule for a task.
+    Enable scheduling for a task.
 
     **Parameters:**
     - task_id (int, required): The ID of the task to schedule
-    - schedule_type (str, required): The type of schedule
-      - 'once': Execute task one time at a specific datetime
-      - 'cron': Execute task on a recurring cron schedule  
-      - 'interval': Execute task at fixed time intervals
     - schedule_config (str, required): JSON string with schedule configuration
-      - For 'once': '{"datetime": "2025-01-15T14:30:00"}' 
-        * datetime: ISO format timestamp when task should run (YYYY-MM-DDTHH:MM:SS)
-        * Task will run exactly once at this time, then the schedule auto-deactivates
-      - For 'cron': '{"expression": "0 14 * * *"}' 
-        * expression: Standard cron format (minute hour day month day_of_week)
-        * Examples: "0 14 * * *" (daily at 2pm), "*/5 * * * *" (every 5 minutes)
-      - For 'interval': '{"seconds": 3600}'
-        * seconds: Number of seconds between executions
-        * Optional: "start_date" to specify when intervals begin
-    - enabled (bool, optional): Whether schedule is active (default: true)
+      - For 'once': '{"type": "once", "datetime": "2025-01-15T14:30:00"}'
+      - For 'cron': '{"type": "cron", "expression": "0 14 * * *"}'
+      - For 'interval': '{"type": "interval", "seconds": 3600}'
+    - schedule_enabled (bool, optional): Whether schedule is active (default: true)
 
     **Examples:**
-    - One-time execution: schedule_type="once", schedule_config='{"datetime": "2025-01-15T09:00:00"}'
-    - Daily at 9am: schedule_type="cron", schedule_config='{"expression": "0 9 * * *"}'  
-    - Every hour: schedule_type="interval", schedule_config='{"seconds": 3600}'
+    - One-time execution: '{"type": "once", "datetime": "2025-01-15T09:00:00"}'
+    - Daily at 9am: '{"type": "cron", "expression": "0 9 * * *"}'
+    - Every hour: '{"type": "interval", "seconds": 3600}'
 
     **Responses:**
-    - 200: Successful response with schedule details
+    - 200: Successful response with task details
     - 400: Invalid JSON in schedule_config
+    - 404: Task not found
     - 500: Internal server error
     """
     try:
         import json
         try:
-            config_dict = json.loads(schedule.schedule_config)
+            config_dict = json.loads(schedule_update.schedule_config)
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid JSON in schedule_config")
-        db_schedule = scheduler_manager.create_schedule(
-            task_id=schedule.task_id,
-            schedule_type=ScheduleType(schedule.schedule_type),
-            schedule_config=config_dict
-        )
-        
-        if db_schedule:
-            # Set the enabled status if provided
-            if hasattr(schedule, 'enabled'):
-                with db_manager.get_session() as session:
-                    db_schedule = session.query(Schedule).filter_by(id=db_schedule.id).first()
-                    db_schedule.is_active = schedule.enabled.lower() == 'true'
-                    session.commit()
-            with db_manager.get_session() as session:
-                fresh_schedule = session.query(Schedule).filter_by(id=db_schedule.id).first()
-                return {
-                    "success": True,
-                    "schedule": fresh_schedule.to_dict() if fresh_schedule else None,
-                    "message": f"Schedule created for task {schedule.task_id}"
-                }
-        else:
-            raise HTTPException(status_code=500, detail="Failed to create schedule")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating schedule: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.get("/schedules", response_model=Dict[str, Any])
-async def list_schedules(
-    task_id: Optional[int] = Query(None, description="Filter by task ID"),
-    enabled: Optional[bool] = Query(None, description="Filter by enabled status")
-):
-    """List all schedules."""
-    try:
         with db_manager.get_session() as session:
-            query = session.query(Schedule)
-            if task_id is not None:
-                query = query.filter_by(task_id=task_id)
-            if enabled is not None:
-                query = query.filter_by(enabled=enabled)
-            
-            schedules = query.all()
-            schedule_list = []
-            
-            for schedule in schedules:
-                schedule_dict = schedule.to_dict()
-                # Include task info
-                task = session.query(Task).filter_by(id=schedule.task_id).first()
-                if task:
-                    schedule_dict["task_name"] = task.name
-                schedule_list.append(schedule_dict)
-            
-            return {
-                "success": True,
-                "schedules": schedule_list,
-                "count": len(schedule_list)
-            }
-    except Exception as e:
-        logger.error(f"Error listing schedules: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            task = session.query(Task).filter_by(id=task_id).first()
+            if not task:
+                raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
+            # Update task with schedule configuration
+            task.schedule_config = config_dict
+            task.schedule_enabled = schedule_update.schedule_enabled
 
-@app.get("/schedules/{schedule_id}", response_model=Dict[str, Any])
-async def get_schedule(schedule_id: int):
-    """Get a specific schedule."""
-    try:
-        with db_manager.get_session() as session:
-            schedule = session.query(Schedule).filter_by(id=schedule_id).first()
-            if not schedule:
-                raise HTTPException(status_code=404, detail=f"Schedule {schedule_id} not found")
-            
-            schedule_dict = schedule.to_dict()
-            task = session.query(Task).filter_by(id=schedule.task_id).first()
-            if task:
-                schedule_dict["task_name"] = task.name
-            
-            return {
-                "success": True,
-                "schedule": schedule_dict
-            }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting schedule: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.put("/schedules/{schedule_id}", response_model=Dict[str, Any])
-async def update_schedule(schedule_id: int, update: ScheduleUpdate):
-    """Update a schedule."""
-    try:
-        with db_manager.get_session() as session:
-            schedule = session.query(Schedule).filter_by(id=schedule_id).first()
-            if not schedule:
-                raise HTTPException(status_code=404, detail=f"Schedule {schedule_id} not found")
-            
-            if update.enabled is not None:
-                schedule.enabled = update.enabled
-            if update.schedule_config is not None:
-                schedule.schedule_config = update.schedule_config
-            
-            schedule.updated_at = datetime.utcnow()
             session.commit()
-            session.refresh(schedule)
-            
-            # Update scheduler
-            if update.enabled is not None:
-                if update.enabled:
-                    scheduler_manager.enable_schedule(schedule_id)
-                else:
-                    scheduler_manager.disable_schedule(schedule_id)
-            
+
+            # Add to scheduler if enabled
+            if schedule_update.schedule_enabled and scheduler_manager:
+                scheduler_manager.enable_task_schedule(task_id, config_dict)
+
             return {
                 "success": True,
-                "schedule": schedule.to_dict(),
-                "message": f"Schedule {schedule_id} updated successfully"
+                "task": task.to_dict(),
+                "message": f"Scheduling {'enabled' if schedule_update.schedule_enabled else 'disabled'} for task '{task.name}'"
             }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error updating schedule: {e}")
+        logger.error(f"Error updating task schedule: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/schedules/{schedule_id}", response_model=Dict[str, Any])
-async def delete_schedule(schedule_id: int):
-    """Delete a schedule."""
+@app.delete("/tasks/{task_id}/schedule", response_model=Dict[str, Any])
+async def disable_task_schedule(task_id: int):
+    """Disable scheduling for a task."""
     try:
         with db_manager.get_session() as session:
-            schedule = session.query(Schedule).filter_by(id=schedule_id).first()
-            if not schedule:
-                raise HTTPException(status_code=404, detail=f"Schedule {schedule_id} not found")
-            
+            task = session.query(Task).filter_by(id=task_id).first()
+            if not task:
+                raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+            # Disable scheduling
+            task.schedule_enabled = False
+            session.commit()
+
             # Remove from scheduler
-            scheduler_manager.remove_schedule(schedule_id)
-            
-            # Delete from database
-            session.delete(schedule)
-            session.commit()
-            
+            if scheduler_manager:
+                scheduler_manager.disable_task_schedule(task_id)
+
             return {
                 "success": True,
-                "message": f"Schedule {schedule_id} deleted successfully"
+                "task": task.to_dict(),
+                "message": f"Scheduling disabled for task '{task.name}'"
             }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting schedule: {e}")
+        logger.error(f"Error disabling task schedule: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/tasks/{task_id}/complete", response_model=Dict[str, Any])
+async def complete_task(task_id: int):
+    """Mark a task as completed."""
+    try:
+        with db_manager.get_session() as session:
+            task = session.query(Task).filter_by(id=task_id).first()
+            if not task:
+                raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+            task.status_category = 'completed'
+            task.status_text = 'manually completed'
+            session.commit()
+
+            return {
+                "success": True,
+                "task": task.to_dict(),
+                "message": f"Task '{task.name}' marked as completed"
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error completing task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/completion-criteria/evaluate", response_model=Dict[str, Any])
+async def evaluate_completion_criteria():
+    """Evaluate completion criteria for all tasks and update their status."""
+    try:
+        if scheduler_manager:
+            scheduler_manager.evaluate_all_completion_criteria()
+
+        return {
+            "success": True,
+            "message": "Completion criteria evaluation completed"
+        }
+    except Exception as e:
+        logger.error(f"Error evaluating completion criteria: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -554,32 +508,42 @@ async def get_status():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Task history endpoint
-@app.get("/tasks/{task_id}/history", response_model=Dict[str, Any])
-async def get_task_history(task_id: int, limit: int = Query(10, description="Max entries")):
-    """Get task execution history."""
+# Task status endpoint
+@app.get("/tasks/{task_id}/status", response_model=Dict[str, Any])
+async def get_task_status(task_id: int):
+    """Get task status and scheduling information."""
     try:
         with db_manager.get_session() as session:
             task = session.query(Task).filter_by(id=task_id).first()
             if not task:
                 raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-            
+
+            # Get next run time from scheduler if scheduled
+            next_run = None
+            if task.schedule_enabled and scheduler_manager:
+                job_id = f"task_{task_id}"
+                job = scheduler_manager.scheduler.get_job(job_id) if scheduler_manager.scheduler else None
+                if job and job.next_run_time:
+                    next_run = job.next_run_time.isoformat()
+
             return {
                 "success": True,
                 "task_id": task_id,
                 "task_name": task.name,
-                "history": {
-                    "last_run": task.last_run.isoformat() if task.last_run else None,
-                    "next_run": task.next_run.isoformat() if task.next_run else None,
-                    "run_count": task.run_count,
-                    "success_count": task.success_count,
-                    "failure_count": task.failure_count
+                "status": {
+                    "status_category": task.status_category,
+                    "status_text": task.status_text,
+                    "is_scheduled": task.schedule_enabled,
+                    "schedule_config": task.schedule_config,
+                    "next_run": next_run,
+                    "created_at": task.created_at.isoformat() if task.created_at else None,
+                    "updated_at": task.updated_at.isoformat() if task.updated_at else None
                 }
             }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting task history: {e}")
+        logger.error(f"Error getting task status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
