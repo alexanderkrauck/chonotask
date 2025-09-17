@@ -116,6 +116,24 @@ DATABASE_URL=sqlite:///data/chronotask.db  # Default location
 SCHEDULER_TIMEZONE=UTC   # Default: UTC
 ```
 
+## Modeling Criteria
+
+ChronoTask can model **criteria** - ongoing conditions that should always be maintained. Unlike tasks that complete once, criteria are continuously monitored.
+
+**Pattern**: Use `'todo'` task type + periodic scheduling + completion criteria
+
+```json
+{
+  "name": "API Health Check",
+  "task_type": "todo",
+  "completion_criteria": "{\"type\": \"manual\"}",
+  "schedule_config": "{\"type\": \"interval\", \"seconds\": 300}",
+  "schedule_enabled": true
+}
+```
+
+Criteria transition between `'open'` (unmet) and `'completed'` (met) states. Other tasks can depend on criteria being met.
+
 ## API Endpoints
 
 - **API Docs**: http://localhost:8000/api/v1/docs
