@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from collections import Counter
 from itertools import groupby
 
-from RestrictedPython import compile_restricted, safe_globals
+from RestrictedPython import compile_restricted, safe_globals, safe_builtins
 from sqlalchemy.orm import Session
 from sqlalchemy import inspect
 
@@ -112,8 +112,15 @@ class QueryExecutor:
             'tasks': tasks,
             'Task': Task,
 
-            # Safe built-ins
-            '__builtins__': safe_globals,
+            # Safe built-ins with guards
+            '__builtins__': {
+                **safe_builtins,
+                '_getattr_': getattr,
+                '_getitem_': lambda obj, index: obj[index],
+                '_getiter_': lambda obj: iter(obj),
+                '_iter_unpack_sequence_': lambda it, spec: list(it),
+                '_write_': lambda x: x,  # Allow writes to local variables
+            },
             'len': len,
             'list': list,
             'dict': dict,
