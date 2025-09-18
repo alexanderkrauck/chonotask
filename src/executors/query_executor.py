@@ -156,9 +156,8 @@ class QueryExecutor:
             'find_one': lambda pred: next((t for t in tasks if pred(t)), None),
             'count': lambda pred=None: len(tasks) if pred is None else sum(1 for t in tasks if pred(t)),
             'group_by': lambda key_func: {
-                k: list(g) for k, g in groupby(
-                    sorted(tasks, key=key_func), key_func
-                )
+                key: [t for t in tasks if key_func(t) == key]
+                for key in set(key_func(t) for t in tasks)
             },
             'get_by_id': lambda task_id: next((t for t in tasks if t.id == task_id), None),
 
