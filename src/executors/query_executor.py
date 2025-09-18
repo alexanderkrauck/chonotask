@@ -194,14 +194,22 @@ class QueryExecutor:
                 mode='exec'
             )
 
-            if compiled.errors:
+            # Handle different RestrictedPython return formats
+            if hasattr(compiled, 'errors') and compiled.errors:
                 return {
                     'success': False,
                     'error': f"Compilation errors: {'; '.join(compiled.errors)}"
                 }
 
-            if compiled.warnings:
+            if hasattr(compiled, 'warnings') and compiled.warnings:
                 logger.warning(f"Compilation warnings: {compiled.warnings}")
+
+            # If compile_restricted returns None, there was a compilation error
+            if compiled is None:
+                return {
+                    'success': False,
+                    'error': "Compilation failed - code contains restricted operations"
+                }
 
         except SyntaxError as e:
             return {
@@ -219,7 +227,12 @@ class QueryExecutor:
 
         try:
             with timeout_context(timeout):
-                exec(compiled.code, namespace)
+                # Handle different RestrictedPython return formats
+                if hasattr(compiled, 'code'):
+                    exec(compiled.code, namespace)
+                else:
+                    # compiled might be the bytecode directly
+                    exec(compiled, namespace)
 
             execution_time = time.time() - start_time
 
