@@ -18,6 +18,7 @@ from models import Task
 from database import db_manager
 from scheduler.core import SchedulerManager
 from config import settings
+from executors.query_executor import QueryExecutor, QUERY_TEMPLATES
 
 # Configure logging
 logging.basicConfig(
@@ -59,6 +60,11 @@ class TaskUpdate(BaseModel):
 class TaskScheduleUpdate(BaseModel):
     schedule_config: str  # JSON string
     schedule_enabled: bool = True
+
+
+class QueryExecuteRequest(BaseModel):
+    code: str
+    timeout: Optional[int] = None
 
 
 # 1. Create normal FastAPI app (for mounting)
@@ -545,6 +551,166 @@ async def get_task_status(task_id: int):
     except Exception as e:
         logger.error(f"Error getting task status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Query execution endpoints
+@app.post("/api/v1/query/execute", response_model=Dict[str, Any])
+async def execute_query(request: QueryExecuteRequest):
+    """
+    Execute Python code to query tasks.
+
+    The code runs in a restricted namespace with access to:
+    - `tasks`: List of all Task objects (read-only)
+    - `Task`: The Task model class
+    - `find(predicate)`: Find tasks matching a condition
+    - `find_one(predicate)`: Find first task matching a condition
+    - `count(predicate)`: Count tasks matching a condition
+    - `group_by(key_func)`: Group tasks by a key function
+    - `get_by_id(task_id)`: Get task by ID
+    - Status helpers: `is_open()`, `is_completed()`, etc.
+    - Safe Python built-ins: `len`, `filter`, `map`, `sorted`, etc.
+    - `datetime`, `timedelta`, `now()` for date operations
+    - `json` for data manipulation
+
+    Set the `result` variable to return data.
+
+    Example:
+    ```python
+    # Find all urgent open tasks
+    urgent = find(lambda t: is_open(t) and
+                  'urgent' in (t.custom_fields or {}).get('tags', []))
+    result = {
+        'count': len(urgent),
+        'tasks': [t.to_dict() for t in urgent[:10]]
+    }
+    ```
+
+    **Parameters:**
+    - code (str, required): Python code to execute
+    - timeout (int, optional): Execution timeout in seconds (default: 5, max: 30)
+
+    **Responses:**
+    - 200: Successful execution with result
+    - 400: Code compilation or execution error
+    - 500: Internal server error
+    """
+    try:
+        # Validate timeout
+        timeout = request.timeout or settings.query_timeout
+        if timeout > 30:
+            raise HTTPException(
+                status_code=400,
+                detail="Timeout cannot exceed 30 seconds"
+            )
+
+        # Validate code length
+        if len(request.code) > 10000:
+            raise HTTPException(
+                status_code=400,
+                detail="Code cannot exceed 10000 characters"
+            )
+
+        with db_manager.get_session() as session:
+            executor = QueryExecutor(
+                session,
+                max_result_size=settings.query_max_result_size
+            )
+
+            try:
+                result = executor.execute(request.code, timeout=timeout)
+
+                if result.get('success'):
+                    return {
+                        'success': True,
+                        'result': result.get('result'),
+                        'execution_time': result.get('execution_time')
+                    }
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=result.get('error', 'Execution failed')
+                    )
+            finally:
+                executor.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Query execution error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/query/templates", response_model=Dict[str, Any])
+async def get_query_templates():
+    """
+    Get example query templates.
+
+    Returns a list of ready-to-use query templates demonstrating
+    various querying patterns and capabilities.
+
+    **Responses:**
+    - 200: List of query templates
+    """
+    return {
+        "success": True,
+        "templates": QUERY_TEMPLATES,
+        "namespace_info": {
+            "variables": [
+                "tasks - List of all Task objects",
+                "Task - The Task model class",
+                "result - Variable to set with query results"
+            ],
+            "functions": [
+                "find(predicate) - Find tasks matching condition",
+                "find_one(predicate) - Find first matching task",
+                "count(predicate) - Count matching tasks",
+                "group_by(key_func) - Group tasks by key",
+                "get_by_id(task_id) - Get task by ID",
+                "is_open(task), is_completed(task) - Status checkers"
+            ],
+            "utilities": [
+                "datetime, timedelta, now() - Date/time operations",
+                "json - JSON manipulation",
+                "len, filter, map, sorted - Python built-ins"
+            ]
+        }
+    }
+
+
+@app.get("/api/v1/query/help", response_model=Dict[str, Any])
+async def get_query_help():
+    """
+    Get detailed help for the query execution system.
+
+    **Responses:**
+    - 200: Help documentation
+    """
+    return {
+        "success": True,
+        "help": {
+            "description": "Execute Python code to query and analyze tasks in the ChronoTask database.",
+            "security": "Code runs in a restricted sandbox with read-only database access.",
+            "usage": "Write Python code that sets the 'result' variable with your query results.",
+            "example": """# Example: Find urgent tasks created this week
+from_date = now() - timedelta(days=7)
+urgent_recent = find(lambda t:
+    t.created_at > from_date and
+    'urgent' in (t.custom_fields or {}).get('tags', [])
+)
+result = {
+    'count': len(urgent_recent),
+    'tasks': [t.to_dict() for t in urgent_recent]
+}""",
+            "tips": [
+                "Use find() to filter tasks with a lambda function",
+                "Use group_by() to aggregate tasks by any attribute",
+                "Task objects have to_dict() method for serialization",
+                "All database access is read-only - writes will fail",
+                "Execution timeout is 5 seconds by default",
+                "Result size is limited to prevent memory issues"
+            ]
+        }
+    }
 
 
 # 2. Convert to MCP

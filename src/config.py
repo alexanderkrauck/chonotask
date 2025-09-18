@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # Security
     allow_host_commands: bool = True
     allowed_bash_commands: list = []  # Empty means all commands allowed
+
+    # Query execution
+    query_timeout: int = 5  # Maximum execution time in seconds
+    query_max_result_size: int = 100000  # Maximum result size in bytes
     
     # Logging
     log_level: str = "INFO"
